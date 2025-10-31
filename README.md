@@ -1,4 +1,4 @@
-# 安徽工业大学晚寝自动签到脚本 (AHUT Auto Sign-in)
+# 安徽工业大学晚寝自动签到脚本 (AHUT_WQQD)
 
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg )](https://www.python.org/downloads/ )
 [![License](https://img.shields.io/badge/License-MIT-green.svg )](https://opensource.org/licenses/MIT )
