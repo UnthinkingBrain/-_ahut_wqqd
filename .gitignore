@@ -1,0 +1,22 @@
+# 操作系统和编辑器生成的文件
+.DS_Store
+Thumbs.db
+
+# JetBrains IDE (PyCharm, IntelliJ) 的项目配置目录
+.idea/
+
+# Python 虚拟环境目录
+venv/
+*/venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 依赖管理
+pip-freeze.txt
+requirements.txt.bak
+
+# 日志和数据库文件
+*.log
+*.sqlite3
