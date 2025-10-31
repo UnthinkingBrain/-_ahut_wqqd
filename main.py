@@ -47,6 +47,8 @@ USER_LIST = [
 ]
 # 单次尝试签到最大尝试次数
 MAX_RETRIES = 4
+# 单次尝试签到因TOKEN失效最大额外尝试次数
+MAX_TOKEN_RETRIES = 3
 ## *------------------------------------------------------* ##
 
 
@@ -297,8 +299,15 @@ def sign_in_by_step(user: User, step: int, debug: bool = False) -> dict:
                 return {'success': False, 'msg': '未在返回信息中解析到taskId字段', 'step': step}
 
         else:
-            logger.warning(f"{user.username}({user.student_Id}) 获取taskId时出现问题：{task_result.get('msg')}")
-            return {'success': False, 'msg': task_result.get('msg'), 'step': step}
+            if (("请求未授权" in task_result.get('msg'))
+                    or ("缺失身份信息" in task_result.get('msg'))
+                    or ('鉴权失败' in task_result.get('msg'))):
+                logger.warning(f"{user.username}({user.student_Id}) Token失效或未授权，将重试获取Token。")
+                user.token = ''
+                return {'success': False, 'msg': 'token失效', 'step': 0}
+            else:
+                logger.warning(f"{user.username}({user.student_Id}) 获取taskId时出现问题：{task_result.get('msg')}")
+                return {'success': False, 'msg': task_result.get('msg'), 'step': step}
 
     # 获取微信接口配置
     if step == 2:
@@ -312,9 +321,16 @@ def sign_in_by_step(user: User, step: int, debug: bool = False) -> dict:
             return {'success': True, 'msg': '', 'step': step+1}
 
         else:
-            logger.warning(
-                f"{user.username}({user.student_Id}) 获取微信接口配置信息时出现问题：{auth_result.get('msg')}")
-            return {'success': False, 'msg': auth_result.get('msg'), 'step': step}
+            if (("请求未授权" in auth_result.get('msg'))
+                    or ("缺失身份信息" in auth_result.get('msg'))
+                    or ('鉴权失败' in auth_result.get('msg'))):
+                logger.warning(f"{user.username}({user.student_Id}) Token失效或未授权，将重试获取Token。")
+                user.token = ''
+                return {'success': False, 'msg': 'token失效', 'step': 0}
+            else:
+                logger.warning(
+                    f"{user.username}({user.student_Id}) 获取微信接口配置信息时出现问题：{auth_result.get('msg')}")
+                return {'success': False, 'msg': auth_result.get('msg'), 'step': step}
 
     # 开启时间窗口
     if step == 3:
@@ -327,9 +343,16 @@ def sign_in_by_step(user: User, step: int, debug: bool = False) -> dict:
             return {'success': True, 'msg': '', 'step': step + 1}
 
         else:
-            logger.warning(
-                f"{user.username}({user.student_Id}) 开启签到时间窗口时出现问题：{apiLog_result.get('msg')}")
-            return {'success': False, 'msg': apiLog_result.get('msg'), 'step': step}
+            if (("请求未授权" in apiLog_result.get('msg'))
+                    or ("缺失身份信息" in apiLog_result.get('msg'))
+                    or ('鉴权失败' in apiLog_result.get('msg'))):
+                logger.warning(f"{user.username}({user.student_Id}) Token失效或未授权，将重试获取Token。")
+                user.token = ''
+                return {'success': False, 'msg': 'token失效', 'step': 0}
+            else:
+                logger.warning(
+                    f"{user.username}({user.student_Id}) 开启签到时间窗口时出现问题：{apiLog_result.get('msg')}")
+                return {'success': False, 'msg': apiLog_result.get('msg'), 'step': step}
 
     # 进行晚寝签到
     if step == 4:
@@ -342,13 +365,20 @@ def sign_in_by_step(user: User, step: int, debug: bool = False) -> dict:
             return {'success': True, 'msg': '', 'step': step + 1}
 
         else:
-            if '未到签到时间！' in sign_in_result.get('msg'):
+            if (("请求未授权" in sign_in_result.get('msg'))
+                    or ("缺失身份信息" in sign_in_result.get('msg'))
+                    or ('鉴权失败' in sign_in_result.get('msg'))):
+                logger.warning(f"{user.username}({user.student_Id}) Token失效或未授权，将重试获取Token。")
+                user.token = ''
+                return {'success': False, 'msg': 'token失效', 'step': 0}
+            else:
+                if '未到签到时间！' in sign_in_result.get('msg'):
+                    logger.warning(
+                        f"因当前时间{get_time()['time']}未到签到时间，{user.username}({user.student_Id}) 签到失败")
+                    return {'success': False, 'msg': sign_in_result.get('msg'), 'step': -1}
                 logger.warning(
-                    f"因当前时间{get_time()['time']}未到签到时间，{user.username}({user.student_Id}) 签到失败")
-                return {'success': False, 'msg': sign_in_result.get('msg'), 'step': -1}
-            logger.warning(
-                f"{user.username}({user.student_Id}) 晚寝签到时出现问题：{sign_in_result.get('msg')}")
-            return {'success': False, 'msg': sign_in_result.get('msg'), 'step': step}
+                    f"{user.username}({user.student_Id}) 晚寝签到时出现问题：{sign_in_result.get('msg')}")
+                return {'success': False, 'msg': sign_in_result.get('msg'), 'step': step}
 
     # 未知情况或传入的step错误
     else:
@@ -373,7 +403,10 @@ def sign_in(user: User, debug: bool = False):
         step = result['step']
         if not result['success']:
             error_history.add(result['msg'])
-            retries += 1
+            if step == 0 and token_retries < MAX_TOKEN_RETRIES:
+                token_retries += 1
+            else:
+                retries += 1
         # 添加随机延时，模拟手动操作
         time.sleep(random.randint(50,150)/100)
 
