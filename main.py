@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # @Author：Spance
 # @Email: wqqd@spance.xyz
-# @Version：v1.5
+# @Version：v1.6
 # @Desc:安徽工业大学考勤系统自动签到
 
 
@@ -21,9 +21,13 @@ import asyncio
 
 """
                 更新日志
+2026年3月14日 21:57:27:
+  添加了异步并发限制，现在无需担心并发太多导致学校服务器压力过大。
+  修复了获取经纬度时保存的数据为str类型，导致无法偏置
+  
 2026年3月14日:
   整体修改成异步执行，在多用户情况下比多线程更快，更合适。
-  经过实际测试，异步条件下单次执行不超过15s即可完成百人签到(但不建议异步执行时这么多用户)
+  经过实际测试，异步条件下无限制并发量单次执行不超过15s即可完成百人签到
   添加了获取系统设置的宿舍楼信息接口，创建用户对象时无需设置经纬度。
   为签到的位置添加了随机数，模拟定位偏差。
   每个用户使用专属session持久化上下文调用接口，减少爬虫特征。
@@ -80,6 +84,8 @@ USER_LIST = [
 MAX_RETRIES = 4
 # 单次尝试签到因TOKEN失效最大额外尝试次数
 MAX_TOKEN_RETRIES = 3
+# 异步并发数限制
+MAX_CONCURRENT = 25
 ## *------------------------------------------------------* ##
 
 
@@ -423,8 +429,8 @@ async def sign_in_by_step(user: User, step: int, debug: bool = False) -> dict:
             logger.debug(f"{user.username}({user.student_Id}) 获取签到位置返回信息 {location_result}")
 
             if location_result['code'] == 200:
-                user.latitude=location_result['data'].get('dormitoryRegisterVO',{}).get('locationLat')
-                user.longitude=location_result['data'].get('dormitoryRegisterVO',{}).get('locationLng')
+                user.latitude=float(location_result['data'].get('dormitoryRegisterVO',{}).get('locationLat'))
+                user.longitude=float(location_result['data'].get('dormitoryRegisterVO',{}).get('locationLng'))
                 logger.info(f"为 {user.username}({user.student_Id}) 获取签到位置成功")
                 return {'success': True, 'msg': '', 'step': step+1}
             else:
@@ -502,18 +508,23 @@ async def sign_in(user: User, debug: bool = False):
         # 添加随机延时，模拟手动操作
         await asyncio.sleep(round(random.uniform(0.5,2),2))
 
-    if step == 5:
+    if step == 6:
         return {'success': True, 'data': error_history}
     else:
         return {'success': False, 'data': error_history}
 
 
-# 异步执行(速度极快,不建议太多用户时使用,可能对学校服务器造成极大负担)
-# 使用人数超过50人时建议多次运行，单次用户列表长度不建议超过50
+# 异步执行
 async def main():
+
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+
+    async def limited_sign_in(user):
+        async with semaphore:
+            return await sign_in(user, debug=True) # 如需在非签到时间内测试可传入参数debug=True
+
     async_results = await asyncio.gather(
-        *(sign_in(u,debug=True) # 如需在非签到时间内测试可传入参数debug=True
-        for u in USER_LIST))
+        *(limited_sign_in(u) for u in USER_LIST))
     return {u.student_Id:result for u,result in zip(USER_LIST,async_results)}
 
 
@@ -534,6 +545,7 @@ if __name__ == '__main__':
     results = asyncio.run(main())
     end_time = time.time()
     print(f"本次为 {len(USER_LIST)} 人尝试进行签到，成功人数：{sum([1 if result['success'] else 0 for result in results.values()])}，"
-          f"本次任务总耗时 {end_time - start_time:.2f} 秒。\n本次任务详细结果如下：")
+          f"本次任务总耗时 {end_time - start_time:.2f} 秒。\n本次任务签到失败的详细结果如下：")
     for k,v in results.items():
-        print(f"\t{k}: {v}")
+        if not v['success']:
+            print(f"\t{k}: {v}")
