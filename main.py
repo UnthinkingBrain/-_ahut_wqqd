@@ -478,11 +478,7 @@ async def sign_in_by_step(user: User, step: int, debug: bool = False) -> dict:
                 logger.warning(f"{user.username}({user.student_Id}) Token失效或未授权，将重试获取Token。")
                 user.token = ''
                 return {'success': False, 'msg': 'token失效', 'step': 0}
-            else:
-                user.longitude=31.668
-                user.latitude=118.227
-                logger.warning(f"未能为 {user.username}({user.student_Id}) 获取签到位置，已使用默认位置托底")
-                return {"success":True,"msg":"","step":step+1}
+            return {"success":False,"msg":"","step":step+1}
     # 进行晚寝签到
     if step == 5:
         async with SIGN_IN_LOCK:
