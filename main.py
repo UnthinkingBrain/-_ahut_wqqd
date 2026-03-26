@@ -111,7 +111,7 @@ USER_LIST = [
     # User(259000003, "保我代码", "password"),
 
     # 此处使用随机学号进行调试，实际情况请使用需要签到学生的学号
-    User(random.randint(259024000,259025000)) for _ in range(20)
+    User(random.randint(259024000,259025000))
 ]
 # 单次尝试签到最大尝试次数
 MAX_RETRIES = 4
