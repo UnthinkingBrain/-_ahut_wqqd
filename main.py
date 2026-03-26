@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 # @Author：Spance
 # @Email: wqqd@spance.xyz
-# @Version：v1.7
+# @Version：v1.8
 # @Desc:安徽工业大学考勤系统自动签到
 
 
 import base64
-from datetime import datetime
+import json
+from datetime import datetime, timezone, timedelta
 import hashlib
 import logging
 import random
@@ -21,6 +22,11 @@ import asyncio
 
 """
                 更新日志
+2026年3月26日 14:32:38：
+  修复了学校于2026年3月24日更新导致无法签到的错误，目前项目已可以正常签到
+  但为保证签到接口不因为频繁操作导致失败，上调了签到前的等待时间，并加锁限制
+  若您为多名用户进行签到，请自行调整重试次数及等待时间
+  
 2026年3月17日 21:39:52:
   修复了没有在程序结束之前关闭各用户的session，若持久化运行会导致内存泄漏的问题
 
@@ -61,6 +67,8 @@ class User:
     token: str = None
     # 签到任务的内部Id(无需填写，实时获取)
     taskId: int = None
+    # 宿舍床位编号(无需填写，自动获取)
+    room_id:str = ""
     # 当前提供的密码是否为加密之后的
     is_encrypted: int = 0
     # 内部持有的session
@@ -103,14 +111,16 @@ USER_LIST = [
     # User(259000003, "保我代码", "password"),
 
     # 此处使用随机学号进行调试，实际情况请使用需要签到学生的学号
-    User(random.randint(259024000,259025000))
+    User(random.randint(259024000,259025000)) for _ in range(20)
 ]
 # 单次尝试签到最大尝试次数
 MAX_RETRIES = 4
 # 单次尝试签到因TOKEN失效最大额外尝试次数
 MAX_TOKEN_RETRIES = 3
 # 异步并发数限制
-MAX_CONCURRENT = 25
+MAX_CONCURRENT = 15
+# 签到请求锁
+SIGN_IN_LOCK = asyncio.Lock()
 ## *------------------------------------------------------* ##
 
 
@@ -170,8 +180,8 @@ WEB_DICT = {
     # 获取签到位置
     'get_location_api': f"{API_BASE_URL}/flySource-yxgl/dormSignTask/getTaskByIdForApp"
                         "?taskId={TASK_ID}&signDate={date_str}",
-    # 进行晚寝签到
-    "sign_in_api": f"{API_BASE_URL}/flySource-yxgl/dormSignRecord/add",
+    # 进行晚寝签到(已更新)
+    "sign_in_api": f"{API_BASE_URL}/flySource-yxgl/dormSignRecord/stuSign",
     # 获取未签到列表
     "sign_in_result_api": f"{API_BASE_URL}/flySource-yxgl/dormSignStu/getWqdStudentPage"
                           "?taskId={TASK_ID}&xhOrXm=&nowDate={date_str}&userDataType=student&current=1&size=100",
@@ -278,7 +288,33 @@ def generate_params(user: User):
         'scope': 'all'
     }
 
+# 签到接口新参数signCode生成方法
+def generate_signCode(timestamp_ms):
+    dt = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc) + timedelta(hours=8)
 
+    week = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+             "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    w = week[dt.weekday()]
+    m = month[dt.month - 1]
+    tz = "GMT+0800 (中国标准时间)"
+    time_str = f"{w} {m} {dt.day:02d} {dt.year} {dt.strftime('%H:%M:%S')} {tz}"
+    return hashlib.md5(time_str.encode()).hexdigest()
+
+# 签到接口新参数stuTaskId生成方法
+def generate_stuTaskId(lat, lng, acc, date, taskId, fileId=""):
+    data = {
+        "latitude": str(lat),
+        "longitude": str(lng),
+        "locationAccuracy": str(acc),
+        "signDate": date,
+        "taskId": taskId,
+        "fileId": fileId
+    }
+    json_str = json.dumps(data, separators=(',', ':'))
+    return hashlib.md5(json_str.encode()).hexdigest()
+
+# 签到接口新的提交表单
 def generate_data(user: User) -> dict:
     """
     为user生成对应的data用于签到请求时发送
@@ -286,20 +322,21 @@ def generate_data(user: User) -> dict:
     :param user: User对象
     :return: 规范后的data字典
     """
-    date = get_time()
+    signLat = user.latitude + round(random.uniform(-0.01, 0.01), 6)
+    signLng = user.longitude + round(random.uniform(-0.01, 0.01), 6)
+    locationAccuracy = round(random.uniform(25, 35), 2)
     return {
-        "taskId": user.taskId,
-        "signAddress": "",
-        "locationAccuracy": round(random.uniform(25, 35), 2),
-        "signLat": user.latitude+round(random.uniform(-0.01,0.01),6),
-        "signLng": user.longitude+round(random.uniform(-0.01,0.01),6),
         "signType": 0,
-        "fileId": "",
-        "imgBase64": "/static/images/dormitory/photo.png",
-        "signDate": date["date"],
-        "signTime": date["time"],
-        "signWeek": date["weekday"],
+        "taskId": user.taskId,
+        "signLat": signLat,
+        "signLng": signLng,
+        "locationAccuracy": locationAccuracy,
+        "stuTaskId": generate_stuTaskId(signLat,signLng,locationAccuracy,get_time()['date'],user.taskId),
         "scanCode": "",
+        "scanType": "",
+        "roomId": user.room_id,
+        "signKey": user.room_id,
+        "signCode": generate_signCode(int(time.time())),
     }
 
 
@@ -431,6 +468,7 @@ async def sign_in_by_step(user: User, step: int, debug: bool = False) -> dict:
         if location_result['code'] == 200:
             user.latitude=float(location_result['data'].get('dormitoryRegisterVO',{}).get('locationLat'))
             user.longitude=float(location_result['data'].get('dormitoryRegisterVO',{}).get('locationLng'))
+            user.room_id = location_result['data'].get('dormitoryRegisterVO', {}).get("roomId")
             logger.info(f"为 {user.username}({user.student_Id}) 获取签到位置成功")
             return {'success': True, 'msg': '', 'step': step+1}
         else:
@@ -447,32 +485,36 @@ async def sign_in_by_step(user: User, step: int, debug: bool = False) -> dict:
                 return {"success":True,"msg":"","step":step+1}
     # 进行晚寝签到
     if step == 5:
-        logger.info(f"开始为 {user.username}({user.student_Id}) 晚寝签到")
-        async with user.session.post(
-                url=WEB_DICT["sign_in_api"],
-                json=generate_data(user),
-                headers=generate_header(user,WEB_DICT['sign_in_api'])
-        ) as resp:
-            sign_in_result = await resp.json()
-        logger.debug(f"{user.username}({user.student_Id}) 晚寝签到返回信息 {sign_in_result}")
-        if sign_in_result['code'] == 200 or '您今天已完成签到' in sign_in_result['msg']:
-            logger.info(f"为 {user.username}({user.student_Id}) 晚寝签到成功")
-            return {'success': True, 'msg': '', 'step': step + 1}
-        else:
-            if (("请求未授权" in sign_in_result.get('msg'))
-                    or ("缺失身份信息" in sign_in_result.get('msg'))
-                    or ('鉴权失败' in sign_in_result.get('msg'))):
-                logger.warning(f"{user.username}({user.student_Id}) Token失效或未授权，将重试获取Token。")
-                user.token = ''
-                return {'success': False, 'msg': 'token失效', 'step': 0}
+        async with SIGN_IN_LOCK:
+            logger.info(f"开始为 {user.username}({user.student_Id}) 晚寝签到")
+            sleep_time = round(random.uniform(4,10))
+            logger.debug(f"等待时间:{sleep_time}")
+            await asyncio.sleep(sleep_time)
+            async with user.session.post(
+                    url=WEB_DICT["sign_in_api"],
+                    json=generate_data(user),
+                    headers=generate_header(user,WEB_DICT['sign_in_api'])
+            ) as resp:
+                sign_in_result = await resp.json()
+            logger.debug(f"{user.username}({user.student_Id}) 晚寝签到返回信息 {sign_in_result}")
+            if sign_in_result['code'] == 200 or '您今天已完成签到' in sign_in_result['msg']:
+                logger.info(f"为 {user.username}({user.student_Id}) 晚寝签到成功")
+                return {'success': True, 'msg': '', 'step': step + 1}
             else:
-                if '未到签到时间！' in sign_in_result.get('msg'):
+                if (("请求未授权" in sign_in_result.get('msg'))
+                        or ("缺失身份信息" in sign_in_result.get('msg'))
+                        or ('鉴权失败' in sign_in_result.get('msg'))):
+                    logger.warning(f"{user.username}({user.student_Id}) Token失效或未授权，将重试获取Token。")
+                    user.token = ''
+                    return {'success': False, 'msg': 'token失效', 'step': 0}
+                else:
+                    if '未到签到时间！' in sign_in_result.get('msg'):
+                        logger.warning(
+                            f"因当前时间{get_time()['time']}未到签到时间，{user.username}({user.student_Id}) 签到失败")
+                        return {'success': False, 'msg': sign_in_result.get('msg'), 'step': -1}
                     logger.warning(
-                        f"因当前时间{get_time()['time']}未到签到时间，{user.username}({user.student_Id}) 签到失败")
-                    return {'success': False, 'msg': sign_in_result.get('msg'), 'step': -1}
-                logger.warning(
-                    f"{user.username}({user.student_Id}) 晚寝签到时出现问题：{sign_in_result.get('msg')}")
-                return {'success': False, 'msg': sign_in_result.get('msg'), 'step': step}
+                        f"{user.username}({user.student_Id}) 晚寝签到时出现问题：{sign_in_result.get('msg')}")
+                    return {'success': False, 'msg': sign_in_result.get('msg'), 'step': step}
 
     # 未知情况或传入的step错误
     else:
