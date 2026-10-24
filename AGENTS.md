@@ -163,6 +163,7 @@ python main_sync.py               # 同步基础版（无第三方依赖）
 ```
 ├── AGENTS.md            ← 本文档（Agent 先读我）
 ├── README.md            ← 面向人类用户的使用说明
+├── LICENSE              ← MIT 许可证
 ├── main.py              ← 异步多用户入口（aiohttp）
 ├── main_sync.py         ← 同步基础版入口（纯标准库）
 ├── config_loader.py     ← 共享配置加载器（文件导入 + 交互输入，纯标准库）
