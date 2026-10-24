@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # @Author：Spance
 # @Email: wqqd@spance.xyz
-# @Version：v2.0
+# @Version：v2.1
 # @Desc:安徽工业大学考勤系统自动签到（同步标准库版，无第三方依赖）
 
 import base64
@@ -9,6 +9,7 @@ import json
 from datetime import datetime, timezone, timedelta
 import hashlib
 import logging
+import os
 import random
 import sys
 import time
@@ -17,8 +18,16 @@ from urllib.parse import urlparse, urlencode
 import urllib.request
 import urllib.error
 import http.cookiejar
+
+from config_loader import resolve_users, to_user_kwargs
 """
                 更新日志
+2026年10月24日：
+  新增 config_loader 配置层，用户配置不再必须改源码：
+  1) 支持 users.json 文件导入（格式见 users.example.json），交互输入支持多人并可保存复用
+  2) 原 USER_LIST 硬编码用法保留兼容（非空时优先，跳过文件/交互加载）
+  3) 顶层不再直接执行 input()，改为签到前统一加载（import 本文件不再触发输入）
+  4) 交互输入中断（Ctrl+C/EOF）时友好退出
 2026年3月26日 14:32:38：
   修复了学校于2026年3月24日更新导致无法签到的错误，目前项目已可以正常签到
   但为保证签到接口不因为频繁操作导致失败，上调了签到前的等待时间，并加锁限制
@@ -94,10 +103,11 @@ class User:
 # log输出的等级 (logging.[DEBUG,INFO,WARNING,ERROR,CRITICAL])
 #       []内的为可选列表，推荐logging.INFO)
 LOG_GRADE = logging.INFO
-# 用户列表，每一个元素是用户对象
-USER_LIST = [
-    User(student_Id=int(input("请输入学号后回车")),password=input('请输入密码(默认密码可以直接回车)').strip() or "Ahgydx@920")
-]
+# 用户配置方式（优先级从高到低，详见 AGENTS.md 与 config_loader.py）：
+#   1) 脚本同目录下的 users.json（格式见 users.example.json）
+#   2) 交互式输入（无配置文件时自动进入，支持多人，可选择保存供下次复用）
+# 也可以保持旧用法：直接在下方硬编码 User 对象（硬编码存在时优先生效，跳过文件/交互加载）
+USER_LIST = []  # 运行时由 _prepare_users() 自动填充
 # 单次尝试签到最大尝试次数
 MAX_RETRIES = 4
 # 单次尝试签到因TOKEN失效最大额外尝试次数
@@ -508,7 +518,18 @@ def sign_in(user: User, debug: bool = False):
     else:
         return {'success': False, 'data': error_history}
 
+def _prepare_users():
+    """
+    按优先级填充 USER_LIST（旧硬编码 > 同目录 users.json > 交互式输入）。
+    """
+    global USER_LIST
+    if USER_LIST:
+        return
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    USER_LIST = [User(**to_user_kwargs(d)) for d in resolve_users(base_dir=base_dir)]
+
 def main():
+    _prepare_users()
     results = {}
     start = time.time()
     for u in USER_LIST:

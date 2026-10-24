@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # @Author：Spance
 # @Email: wqqd@spance.xyz
-# @Version：v1.8
+# @Version：v1.9
 # @Desc:安徽工业大学考勤系统自动签到
 
 
@@ -10,6 +10,7 @@ import json
 from datetime import datetime, timezone, timedelta
 import hashlib
 import logging
+import os
 import random
 import sys
 import time
@@ -19,9 +20,18 @@ from urllib.parse import urlparse
 import aiohttp
 import asyncio
 
+from config_loader import resolve_users, to_user_kwargs
+
 
 """
                 更新日志
+2026年10月24日：
+  新增 config_loader 配置层，用户配置不再必须改源码：
+  1) 支持 users.json 文件导入（格式见 users.example.json），命令行可用 -f 指定配置文件
+  2) 无配置文件时进入交互式输入，支持多人，可选择保存为 users.json 供下次复用
+  3) 原 USER_LIST 硬编码用法保留兼容（非空时优先，跳过文件/交互加载）
+  4) 移除默认的随机学号调试用户；交互输入中断（Ctrl+C/EOF）时友好退出
+
 2026年3月26日 14:32:38：
   修复了学校于2026年3月24日更新导致无法签到的错误，目前项目已可以正常签到
   但为保证签到接口不因为频繁操作导致失败，上调了签到前的等待时间，并加锁限制
@@ -102,16 +112,16 @@ class User:
 # log输出的等级 (logging.[DEBUG,INFO,WARNING,ERROR,CRITICAL])
 #       []内的为可选列表，推荐logging.INFO)
 LOG_GRADE = logging.DEBUG
-# 用户列表，每一个元素是用户对象，具体内容请参考class User
-# 本处所给的是四个样例，实际使用时请根据实际填写
+# 用户配置方式（优先级从高到低，详见 AGENTS.md 与 config_loader.py）：
+#   1) 命令行指定配置文件：python main.py -f users.json
+#   2) 脚本同目录下的 users.json（格式见 users.example.json）
+#   3) 交互式输入（无配置文件时自动进入，支持多人，可选择保存供下次复用）
+# 也可以保持旧用法：直接在下方硬编码 User 对象（硬编码存在时优先生效，跳过文件/交互加载）
 USER_LIST = [
-    # 使用参考
+    # 使用参考：
     # User(259000000),
     # User(259000001, "诸天神佛"),
     # User(259000003, "保我代码", "password"),
-
-    # 此处使用随机学号进行调试，实际情况请使用需要签到学生的学号
-    User(random.randint(259024000,259025000))
 ]
 # 单次尝试签到最大尝试次数
 MAX_RETRIES = 4
@@ -549,7 +559,13 @@ async def sign_in(user: User, debug: bool = False):
 
 
 # 异步执行
-async def main():
+async def main(config_file: str = None):
+    global USER_LIST
+    # 旧用法兼容：配置区已硬编码用户则直接使用；否则按优先级加载配置（文件 > 交互输入）。
+    # 显式指定 config_file 时始终重新解析（覆盖上一次加载结果）。
+    if config_file is not None or not USER_LIST:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        USER_LIST = [User(**to_user_kwargs(d)) for d in resolve_users(config_file, base_dir=base_dir)]
 
     semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 
@@ -576,8 +592,15 @@ async def main():
 
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description="安徽工业大学晚寝自动签到（异步多用户版）")
+    parser.add_argument("-f", "--file", default=None,
+                        help="用户配置文件路径(JSON)，默认读取脚本同目录 users.json；"
+                             "均不存在时进入交互式输入")
+    cli_args = parser.parse_args()
+
     start_time = time.time()
-    results = asyncio.run(main())
+    results = asyncio.run(main(cli_args.file))
     end_time = time.time()
     print(f"本次为 {len(USER_LIST)} 人尝试进行签到，成功人数：{sum([1 if result['success'] else 0 for result in results.values()])}，"
           f"本次任务总耗时 {end_time - start_time:.2f} 秒。\n本次任务签到失败的详细结果如下：")

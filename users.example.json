@@ -1,0 +1,20 @@
+{
+  "users": [
+    {
+      "student_id": 259000000,
+      "_说明": "仅填学号：使用初始密码 Ahgydx@920，姓名自动获取"
+    },
+    {
+      "student_id": 259000001,
+      "username": "张三",
+      "_说明": "改过考勤系统密码的，填 password 字段（明文）；下划线开头的字段均为注释，会被忽略"
+    },
+    {
+      "student_id": 259000003,
+      "username": "李四",
+      "password": "your_password",
+      "is_encrypted": 0,
+      "_说明": "若 password 已经是 MD5 值，请把 is_encrypted 设为 1"
+    }
+  ]
+}
